@@ -1,0 +1,6 @@
+cradle:
+  cabal:
+    - path: "cmd/fdsc/"
+      component: "food-delivery-subscriptions:exe:fdsc"
+    - path: "src"
+      component: "food-delivery-subscriptions:lib:fdsc-lib"
