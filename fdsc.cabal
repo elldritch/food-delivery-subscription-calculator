@@ -64,10 +64,11 @@ library fdsc-lib
   import:          lang
   hs-source-dirs:  src
   build-depends:
-    , aeson       ^>=1.5.6.0
-    , containers  ^>=0.6.5.1
-    , req         ^>=3.9.1
-    , time        ^>=1.9.3
+    , aeson                 ^>=1.5.6.0
+    , containers            ^>=0.6.5.1
+    , req                   ^>=3.9.1
+    , time                  ^>=1.9.3
+    , unordered-containers  ^>=0.2.14.0
 
   -- cabal-fmt: expand src
   exposed-modules: FDSC.UberEats
