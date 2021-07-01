@@ -23,6 +23,7 @@ import Network.HTTP.Req
     (/:),
   )
 import Relude
+import Text.Printf (printf)
 
 data Order = Order
   { orderID :: OrderID,
@@ -293,7 +294,61 @@ data Hypotheticals = Hypotheticals
   deriving (Show)
 
 render :: Order -> String
-render order = show order
+render Order {items, created, store = Store {title}, fare} =
+  "Store: " ++ toString title ++ "\n"
+    ++ "Date:  "
+    ++ show created
+    ++ "\n"
+    ++ "Items:\n"
+    ++ showItems items
+    ++ "Fare:\n"
+    ++ showFare fare
+  where
+    showItems :: [Item] -> String
+    showItems = mconcat . fmap showItem
+
+    showItem :: Item -> String
+    showItem Item {title = t, quantity, price} =
+      "- " ++ toString t ++ ": "
+        ++ "("
+        ++ show quantity
+        ++ "x "
+        ++ showMoney (price / 100)
+        ++ ")\n"
+
+    showMoney :: Double -> String
+    showMoney amount = printf "$%1.2f" amount
+
+    showFare :: Fare -> String
+    showFare Fare {breakdown} =
+      "- Base:\n"
+        ++ showFareItem "eats_fare.subtotal"
+        ++ showFareItem "eats_fare.tip"
+        ++ showFareItem "eats.tax.base"
+        ++ "- Fees:\n"
+        ++ showFareItem "eats.mp.charges.booking_fee"
+        ++ showFareItem "eats.mp.charges.basket_dependent_fee"
+        ++ showFareItem "eats.mp.charges.mpf_cap_dependent_fee"
+        ++ "- Discounts:\n"
+        ++ showFareItem "eats.discounts.promotion"
+        ++ showFareItem "eats.item_discount.promotion_total"
+        ++ showFareItem "eats.mp.discounts.no_rush_delivery_discount"
+        ++ "- Subscription:\n"
+        ++ showFareItem "eats.mp.discounts.subscription_basket_dependent_discount"
+        ++ showFareItem "eats.mp.discounts.subscription_delivery_fee_discount"
+        ++ "- Corrections:\n"
+        ++ showFareItem "eats.mp.eater.base.delivery_fee_correction.exclusive"
+        ++ showFareItem "eats.mp.eater.base.order_correction.exclusive"
+        ++ showFareItem "eats.mp.eater.base.order_correction.tax.exclusive"
+        ++ "- Total:\n"
+        ++ showFareItem "eats_fare.total"
+        ++ "\n"
+      where
+        showFareItem :: Text -> String
+        showFareItem key = case Map.lookup key breakdown of
+          Just FareItem {label, value} ->
+            "  - " ++ toString label ++ ": " ++ showMoney value ++ "\n"
+          Nothing -> ""
 
 alternativePrices :: Order -> Hypotheticals
 alternativePrices original = undefined

@@ -50,4 +50,4 @@ main = do
   -- Use delivery and service fee from historical item.
 
   -- Summarize findings and make a recommendation.
-  putStrLn $ intercalate "\n\n" $ render <$> orders
+  putStrLn $ intercalate "\n" $ render <$> orders
