@@ -1,7 +1,8 @@
-module FDSC.UberEats (getOrdersSince, Order (..), SessionID (..)) where
+module FDSC.UberEats (getOrdersSince, Order (..), SessionID (..), render) where
 
 import Data.Aeson (FromJSON (..), Value, withArray, withObject, (.:), (.:?))
 import Data.Aeson.Types (Parser)
+import Data.Foldable (foldrM)
 import Data.HashMap.Strict qualified as HashMap
 import Data.Map qualified as Map
 import Data.Time (UTCTime)
@@ -25,10 +26,18 @@ import Relude
 
 data Order = Order
   { orderID :: OrderID,
+    created :: UTCTime,
+    status :: OrderStatus,
     items :: [Item],
     store :: Store,
     fare :: Fare
   }
+  deriving (Show)
+
+data OrderStatus
+  = InProgress
+  | Completed UTCTime
+  | Cancelled UTCTime
   deriving (Show)
 
 data Item = Item
@@ -92,13 +101,14 @@ instance FromJSON UberEatsAPIResponse where
     meta <- d .: "meta"
     hasMore <- meta .: "hasMore"
 
-    return UberEatsAPIResponse {orders, lastOrderID, hasMore}
+    pure UberEatsAPIResponse {orders, lastOrderID, hasMore}
     where
       parseOrder :: Value -> Parser Order
       parseOrder = withObject "UberEats order" $ \v -> do
         baseOrder <- v .: "baseEaterOrder"
         orderID <- baseOrder .: "uuid"
         items <- baseOrder .: "shoppingCart" >>= (.: "items") >>= parseItems
+        (created, status) <- baseOrder .: "orderStateChanges" >>= parseStatus
 
         store <- v .: "storeInfo"
         storeTitle <- store .: "title"
@@ -108,13 +118,44 @@ instance FromJSON UberEatsAPIResponse where
         fareTotal <- fare .: "totalPrice"
         breakdown <- fare .: "checkoutInfo" >>= parseCheckoutInfo
 
-        return
+        pure
           Order
             { orderID = OrderID orderID,
+              created,
+              status,
               items,
               store = Store {title = storeTitle, address},
               fare = Fare {total = fareTotal, breakdown}
             }
+
+      parseStatus :: Value -> Parser (UTCTime, OrderStatus)
+      parseStatus = withArray "order state changes" $ \xs -> do
+        (created, status) <- foldrM (flip parseFoldState) (Nothing, InProgress) xs
+        case created of
+          Just createTime -> pure (createTime, status)
+          Nothing -> fail "invalid order state: never created"
+        where
+          parseFoldState ::
+            (Maybe UTCTime, OrderStatus) ->
+            Value ->
+            Parser (Maybe UTCTime, OrderStatus)
+          parseFoldState prev@(created, status) =
+            withObject "order state change" $ \v -> do
+              changeType :: Text <- v .: "type"
+              time <- v .: "stateChangeTime"
+              case changeType of
+                "CREATED" -> case created of
+                  Just _ -> fail "invalid order state: order created twice"
+                  Nothing -> pure (Just time, status)
+                "OFFERED" -> pure prev
+                "ASSIGNED" -> pure prev
+                "COMPLETED" -> case status of
+                  InProgress -> pure (created, Completed time)
+                  Completed _ ->
+                    fail "invalid order state: order completed twice"
+                  Cancelled _ ->
+                    fail "invalid order state: order completed after cancel"
+                _ -> fail "invalid order state: unknown change type"
 
       parseItems :: Value -> Parser [Item]
       parseItems = withArray "shopping cart" $ traverse parseItem . toList
@@ -126,7 +167,7 @@ instance FromJSON UberEatsAPIResponse where
             price <- i .: "price"
             quantity <- i .: "quantity"
             customizations <- i .: "customizations" >>= parseCustomizations
-            return Item {itemID, title, price, quantity, customizations}
+            pure Item {itemID, title, price, quantity, customizations}
 
           parseCustomizations :: Value -> Parser [Customization]
           parseCustomizations =
@@ -151,7 +192,7 @@ instance FromJSON UberEatsAPIResponse where
                 quantity <- v .: "quantity"
                 selectionTitle <- v .: "title"
                 customizationID <- v .: "uuid"
-                return
+                pure
                   Customization
                     { customizationID,
                       price,
@@ -168,7 +209,7 @@ instance FromJSON UberEatsAPIResponse where
         city <- address .: "city"
         region <- address .: "region"
         postalCode <- address .: "postalCode"
-        return
+        pure
           ( address1
               <> " "
               <> maybe "" (" " <>) aptOrSuite
@@ -191,7 +232,7 @@ instance FromJSON UberEatsAPIResponse where
             fareType <- v .: "type"
             label <- v .: "label"
             value <- v .: "rawValue"
-            return (key, FareItem {fareType, label, value})
+            pure (key, FareItem {fareType, label, value})
 
 newtype SessionID = SessionID Text
 
@@ -241,3 +282,18 @@ getOrdersPage (SessionID sid) lastOrderID = parsePage . responseBody <$> request
     parsePage :: UberEatsAPIResponse -> ([Order], Maybe OrderID)
     parsePage UberEatsAPIResponse {orders, lastOrderID = l, hasMore} =
       (orders, if hasMore then Just l else Nothing)
+
+data Hypotheticals = Hypotheticals
+  { original :: Order,
+    noCouponNoSub :: Fare,
+    couponNoSub :: Fare,
+    noCouponSub :: Fare,
+    couponSub :: Fare
+  }
+  deriving (Show)
+
+render :: Order -> String
+render order = show order
+
+alternativePrices :: Order -> Hypotheticals
+alternativePrices original = undefined

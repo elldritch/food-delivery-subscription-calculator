@@ -1,6 +1,6 @@
 module Main (main) where
 
-import FDSC.UberEats (SessionID (..), getOrdersSince)
+import FDSC.UberEats (SessionID (..), getOrdersSince, render)
 import Options.Applicative (Parser, ParserInfo, execParser)
 import Options.Applicative.Builder
   ( fullDesc,
@@ -50,4 +50,4 @@ main = do
   -- Use delivery and service fee from historical item.
 
   -- Summarize findings and make a recommendation.
-  print orders
+  putStrLn $ intercalate "\n\n" $ render <$> orders
