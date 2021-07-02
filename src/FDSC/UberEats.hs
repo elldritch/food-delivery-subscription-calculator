@@ -410,8 +410,7 @@ render Order {items, created, store = Store {title}, fare} =
     ++ "Hypothetical prices:\n"
     ++ "- No  promos, no  sub: "
     ++ showMoney
-      ( sumFare $ removeKeyGroup (fareKeysPromos ++ fareKeysSubs) fare
-      )
+      (sumFare $ removeKeyGroup (fareKeysPromos ++ fareKeysSubs) fare)
     ++ "\n"
     ++ "- Yes promos, no  sub: "
     ++ showMoney (sumFare $ removeKeyGroup fareKeysSubs fare)
@@ -423,15 +422,22 @@ render Order {items, created, store = Store {title}, fare} =
     ++ showMoney (sumFare $ withSub fare)
     ++ "\n"
     ++ "Conclusions:\n"
-    ++ "- Actual price:                    "
+    ++ "- Full price:                        "
+    ++ showMoney
+      (sumFare $ removeKeyGroup (fareKeysPromos ++ fareKeysSubs) fare)
+    ++ "\n"
+    ++ "- Actual price:                      "
     ++ showMoney (sumFare fare)
     ++ "\n"
-    ++ "- Money saved with sub:            "
+    ++ "- Money saved with sub:              "
     ++ showMoney
       ( sumFare (removeKeyGroup fareKeysSubs fare) - sumFare (withSub fare)
       )
     ++ "\n"
-    ++ "- Money saved with sub, no promos: "
+    ++ "- Money saved with promos:           "
+    ++ showMoney (sumFare (removeKeyGroup fareKeysPromos fare) - sumFare fare)
+    ++ "\n"
+    ++ "- Money saved with sub if no promos: "
     ++ showMoney
       ( sumFare (removeKeyGroup fareKeysSubs fare)
           - sumFare (withSub $ removeKeyGroup fareKeysPromos fare)

@@ -46,6 +46,7 @@ main = do
     die "Food delivery service name not recognized."
 
   now <- getCurrentTime
+  putStrLn "Loading past orders... (this can take a few seconds)"
   orders <-
     runAppM debug $
       getOrdersSince
