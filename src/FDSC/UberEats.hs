@@ -7,6 +7,7 @@ import Data.HashMap.Strict qualified as HashMap
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Data.Time (UTCTime)
+import FDSC.App (MonadApp, log)
 import Network.HTTP.Req
   ( HttpBody,
     JsonResponse,
@@ -14,13 +15,11 @@ import Network.HTTP.Req
     NoReqBody (..),
     POST (..),
     ReqBodyJson (..),
-    defaultHttpConfig,
     header,
     https,
     jsonResponse,
     req,
     responseBody,
-    runReq,
     (/:),
   )
 import Relude
@@ -82,6 +81,7 @@ fareKeyBaseSubtotal = "eats_fare.subtotal"
 fareKeysFees :: [Text]
 fareKeysFees =
   [ fareKeyFeeDelivery,
+    "eats.mp.charges.bag_fee",
     "eats.mp.charges.basket_dependent_fee",
     "eats.mp.charges.mpf_cap_dependent_fee"
   ]
@@ -92,8 +92,12 @@ fareKeyFeeDelivery = "eats.mp.charges.booking_fee"
 fareKeysPromos :: [Text]
 fareKeysPromos =
   [ "eats.discounts.promotion",
+    "eats.discounts.store_promotion",
     "eats.item_discount.promotion_total",
-    "eats.mp.discounts.no_rush_delivery_discount"
+    "eats.mp.discounts.bdf_discount_percentage",
+    "eats.mp.discounts.item_level_uber_funded",
+    "eats.mp.discounts.no_rush_delivery_discount",
+    "eats.mp.discounts.uber_funded.restaurant_food_promo"
   ]
 
 fareKeysSubs :: [Text]
@@ -315,7 +319,11 @@ instance FromJSON UberEatsAPIResponse where
             key <- i .: "key"
             unless
               (key `Set.member` supportedFareKeys)
-              $ fail $ "unsupported fare item key: " ++ show key
+              $ fail $
+                "unsupported fare item key: "
+                  ++ show key
+                  ++ " in value: "
+                  ++ show v
             fareType <- i .: "type"
             label <- i .: "label"
             value <- i .: "rawValue"
@@ -331,20 +339,20 @@ newtype OrderID = OrderID Text
 
 -- getOrdersSince takes a session ID cookie and a timestamp, and returns all
 -- orders that were created after that timestamp.
-getOrdersSince :: SessionID -> UTCTime -> IO [Order]
-getOrdersSince sid since =
-  sortOn created <$> runReq defaultHttpConfig (getOrdersSince' sid since)
-
-getOrdersSince' :: (MonadHttp m) => SessionID -> UTCTime -> m [Order]
-getOrdersSince' sid since = getPagesRecurse Nothing
+getOrdersSince :: (MonadApp m) => SessionID -> UTCTime -> m [Order]
+getOrdersSince sid since = sortOn created <$> getPagesRecurse Nothing
   where
     -- Base cases:
     -- 1. Empty page.
     -- 2. All orders on page are before `since`.
     -- 3. No remaining pages (`nextOrderID` is `Nothing`)
-    getPagesRecurse :: (MonadHttp m) => Maybe OrderID -> m [Order]
+    getPagesRecurse :: (MonadApp m) => Maybe OrderID -> m [Order]
     getPagesRecurse orderID = do
+      log $ "Loading page for orderID: " ++ show orderID
       (orders, nextOrderID) <- getOrdersPage sid orderID
+      log $
+        "Oldest order in page: "
+          ++ show (created <$> viaNonEmpty head (sortOn created orders))
       let withinWindow = filter (\Order {created} -> created >= since) orders
       if length withinWindow < length orders || null withinWindow
         then return withinWindow

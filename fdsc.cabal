@@ -71,7 +71,9 @@ library fdsc-lib
     , unordered-containers  ^>=0.2.14.0
 
   -- cabal-fmt: expand src
-  exposed-modules: FDSC.UberEats
+  exposed-modules:
+    FDSC.App
+    FDSC.UberEats
 
 executable fdsc
   import:         lang
