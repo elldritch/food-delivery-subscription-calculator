@@ -1,5 +1,6 @@
 module Main (main) where
 
+import Data.Time (addUTCTime, getCurrentTime)
 import FDSC.UberEats (SessionID (..), getOrdersSince, render)
 import Options.Applicative (Parser, ParserInfo, execParser)
 import Options.Applicative.Builder
@@ -40,14 +41,10 @@ main = do
   unless (service == "uber-eats") $
     die "Food delivery service name not recognized."
 
-  -- Make a request to past orders API.
-  -- Paginate through orders until a certain time span is reached.
+  now <- getCurrentTime
+  orders <-
+    getOrdersSince
+      (SessionID auth)
+      $ addUTCTime (fromInteger $ -1 * 60 * 60 * 24 * 30 * 6) now
 
-  orders <- getOrdersSince (SessionID auth) undefined
-
-  -- Two axes: coupon Y/N and subscription Y/N.
-  -- Compute hypothetical price in each quadrant, and actual price.
-  -- Use delivery and service fee from historical item.
-
-  -- Summarize findings and make a recommendation.
   putStrLn $ intercalate "\n" $ render <$> orders

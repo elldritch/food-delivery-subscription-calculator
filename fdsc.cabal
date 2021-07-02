@@ -83,3 +83,4 @@ executable fdsc
   build-depends:
     , fdsc-lib
     , optparse-applicative  ^>=0.16.1.0
+    , time                  ^>=1.9.3

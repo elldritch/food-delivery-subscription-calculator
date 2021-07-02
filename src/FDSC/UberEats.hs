@@ -5,6 +5,7 @@ import Data.Aeson.Types (Parser)
 import Data.Foldable (foldrM)
 import Data.HashMap.Strict qualified as HashMap
 import Data.Map qualified as Map
+import Data.Set qualified as Set
 import Data.Time (UTCTime)
 import Network.HTTP.Req
   ( HttpBody,
@@ -65,11 +66,73 @@ data Store = Store
   }
   deriving (Show)
 
-data Fare = Fare
-  { total :: Double,
-    breakdown :: Map Text FareItem
-  }
+newtype Fare = Fare (Map Text FareItem)
   deriving (Show)
+
+fareKeysBase :: [Text]
+fareKeysBase =
+  [ fareKeyBaseSubtotal,
+    "eats_fare.tip",
+    "eats.tax.base"
+  ]
+
+fareKeyBaseSubtotal :: Text
+fareKeyBaseSubtotal = "eats_fare.subtotal"
+
+fareKeysFees :: [Text]
+fareKeysFees =
+  [ fareKeyFeeDelivery,
+    "eats.mp.charges.basket_dependent_fee",
+    "eats.mp.charges.mpf_cap_dependent_fee"
+  ]
+
+fareKeyFeeDelivery :: Text
+fareKeyFeeDelivery = "eats.mp.charges.booking_fee"
+
+fareKeysPromos :: [Text]
+fareKeysPromos =
+  [ "eats.discounts.promotion",
+    "eats.item_discount.promotion_total",
+    "eats.mp.discounts.no_rush_delivery_discount"
+  ]
+
+fareKeysSubs :: [Text]
+fareKeysSubs =
+  [ fareKeySubDiscount,
+    fareKeySubDelivery
+  ]
+
+fareKeySubDiscount :: Text
+fareKeySubDiscount = "eats.mp.discounts.subscription_basket_dependent_discount"
+
+fareKeySubDelivery :: Text
+fareKeySubDelivery = "eats.mp.discounts.subscription_delivery_fee_discount"
+
+fareKeysCorrections :: [Text]
+fareKeysCorrections =
+  [ "eats.mp.eater.base.delivery_fee_correction.exclusive",
+    "eats.mp.eater.base.order_correction.exclusive",
+    "eats.mp.eater.base.order_correction.tax.exclusive"
+  ]
+
+fareKeyTotal :: Text
+fareKeyTotal = "eats_fare.total"
+
+supportedFareKeys :: Set Text
+supportedFareKeys =
+  Set.fromList
+    ( fareKeysBase
+        <> fareKeysFees
+        <> fareKeysPromos
+        <> fareKeysSubs
+        <> fareKeysCorrections
+        <> [ fareKeyTotal,
+             "" -- Not sure why this occurs - seems to be one-off bug?
+           ]
+    )
+
+sumFare :: Fare -> Double
+sumFare (Fare breakdown) = foldr (\FareItem {value} -> (+) value) 0.0 breakdown
 
 data FareItem = FareItem
   { label :: Text,
@@ -119,6 +182,10 @@ instance FromJSON UberEatsAPIResponse where
         fareTotal <- fare .: "totalPrice"
         breakdown <- fare .: "checkoutInfo" >>= parseCheckoutInfo
 
+        unless
+          (fareTotal `approx` (sumFare (Fare breakdown) * 100))
+          $ fail "invalid fare: components do not sum to total"
+
         pure
           Order
             { orderID = OrderID orderID,
@@ -126,12 +193,13 @@ instance FromJSON UberEatsAPIResponse where
               status,
               items,
               store = Store {title = storeTitle, address},
-              fare = Fare {total = fareTotal, breakdown}
+              fare = Fare breakdown
             }
 
       parseStatus :: Value -> Parser (UTCTime, OrderStatus)
       parseStatus = withArray "order state changes" $ \xs -> do
-        (created, status) <- foldrM (flip parseFoldState) (Nothing, InProgress) xs
+        (created, status) <-
+          foldrM (flip parseFoldState) (Nothing, InProgress) xs
         case created of
           Just createTime -> pure (createTime, status)
           Nothing -> fail "invalid order state: never created"
@@ -223,17 +291,38 @@ instance FromJSON UberEatsAPIResponse where
           )
 
       parseCheckoutInfo :: Value -> Parser (Map Text FareItem)
-      parseCheckoutInfo =
-        withArray "fare" $
-          (Map.fromList <$>) . traverse parseFareItem . toList
+      parseCheckoutInfo v = do
+        breakdown <- parser v
+
+        -- Validate that sums match up.
+        let FareItem {value = total} = (Map.!) breakdown fareKeyTotal
+        let components = Map.delete fareKeyTotal breakdown
+        let computedTotal = sumFare (Fare components)
+        unless
+          (total `approx` computedTotal)
+          $ fail "invalid fare: components do not sum to total key"
+
+        -- Return price components without sums.
+        return components
         where
+          parser :: Value -> Parser (Map Text FareItem)
+          parser =
+            withArray "fare" $
+              (Map.fromList <$>) . traverse parseFareItem . toList
+
           parseFareItem :: Value -> Parser (Text, FareItem)
-          parseFareItem = withObject "fare item" $ \v -> do
-            key <- v .: "key"
-            fareType <- v .: "type"
-            label <- v .: "label"
-            value <- v .: "rawValue"
+          parseFareItem = withObject "fare item" $ \i -> do
+            key <- i .: "key"
+            unless
+              (key `Set.member` supportedFareKeys)
+              $ fail $ "unsupported fare item key: " ++ show key
+            fareType <- i .: "type"
+            label <- i .: "label"
+            value <- i .: "rawValue"
             pure (key, FareItem {fareType, label, value})
+
+      approx :: Double -> Double -> Bool
+      approx a b = abs (a - b) < 0.01
 
 newtype SessionID = SessionID Text
 
@@ -243,11 +332,27 @@ newtype OrderID = OrderID Text
 -- getOrdersSince takes a session ID cookie and a timestamp, and returns all
 -- orders that were created after that timestamp.
 getOrdersSince :: SessionID -> UTCTime -> IO [Order]
-getOrdersSince sid since = runReq defaultHttpConfig $ getOrdersSince' sid since
+getOrdersSince sid since =
+  sortOn created <$> runReq defaultHttpConfig (getOrdersSince' sid since)
 
--- TODO: implement pagination.
 getOrdersSince' :: (MonadHttp m) => SessionID -> UTCTime -> m [Order]
-getOrdersSince' sid since = fst <$> getOrdersPage sid Nothing
+getOrdersSince' sid since = getPagesRecurse Nothing
+  where
+    -- Base cases:
+    -- 1. Empty page.
+    -- 2. All orders on page are before `since`.
+    -- 3. No remaining pages (`nextOrderID` is `Nothing`)
+    getPagesRecurse :: (MonadHttp m) => Maybe OrderID -> m [Order]
+    getPagesRecurse orderID = do
+      (orders, nextOrderID) <- getOrdersPage sid orderID
+      let withinWindow = filter (\Order {created} -> created >= since) orders
+      if length withinWindow < length orders || null withinWindow
+        then return withinWindow
+        else case nextOrderID of
+          Just _ -> do
+            nextOrders <- getPagesRecurse nextOrderID
+            return $ withinWindow ++ nextOrders
+          Nothing -> return withinWindow
 
 -- getOrdersPage takes a session ID cookie and possibly the last order ID from a
 -- previous page and returns the next page of orders, and another order ID if
@@ -284,15 +389,6 @@ getOrdersPage (SessionID sid) lastOrderID = parsePage . responseBody <$> request
     parsePage UberEatsAPIResponse {orders, lastOrderID = l, hasMore} =
       (orders, if hasMore then Just l else Nothing)
 
-data Hypotheticals = Hypotheticals
-  { original :: Order,
-    noCouponNoSub :: Fare,
-    couponNoSub :: Fare,
-    noCouponSub :: Fare,
-    couponSub :: Fare
-  }
-  deriving (Show)
-
 render :: Order -> String
 render Order {items, created, store = Store {title}, fare} =
   "Store: " ++ toString title ++ "\n"
@@ -303,6 +399,36 @@ render Order {items, created, store = Store {title}, fare} =
     ++ showItems items
     ++ "Fare:\n"
     ++ showFare fare
+    ++ "Hypothetical prices:\n"
+    ++ "- No  promos, no  sub: "
+    ++ showMoney
+      ( sumFare $ removeKeyGroup (fareKeysPromos ++ fareKeysSubs) fare
+      )
+    ++ "\n"
+    ++ "- Yes promos, no  sub: "
+    ++ showMoney (sumFare $ removeKeyGroup fareKeysSubs fare)
+    ++ "\n"
+    ++ "- No  promos, yes sub: "
+    ++ showMoney (sumFare $ withSub $ removeKeyGroup fareKeysPromos fare)
+    ++ "\n"
+    ++ "- Yes promos, yes sub: "
+    ++ showMoney (sumFare $ withSub fare)
+    ++ "\n"
+    ++ "Conclusions:\n"
+    ++ "- Actual price:                    "
+    ++ showMoney (sumFare fare)
+    ++ "\n"
+    ++ "- Money saved with sub:            "
+    ++ showMoney
+      ( sumFare (removeKeyGroup fareKeysSubs fare) - sumFare (withSub fare)
+      )
+    ++ "\n"
+    ++ "- Money saved with sub, no promos: "
+    ++ showMoney
+      ( sumFare (removeKeyGroup fareKeysSubs fare)
+          - sumFare (withSub $ removeKeyGroup fareKeysPromos fare)
+      )
+    ++ "\n"
   where
     showItems :: [Item] -> String
     showItems = mconcat . fmap showItem
@@ -320,35 +446,60 @@ render Order {items, created, store = Store {title}, fare} =
     showMoney amount = printf "$%1.2f" amount
 
     showFare :: Fare -> String
-    showFare Fare {breakdown} =
+    showFare (Fare breakdown) =
       "- Base:\n"
-        ++ showFareItem "eats_fare.subtotal"
-        ++ showFareItem "eats_fare.tip"
-        ++ showFareItem "eats.tax.base"
+        ++ showFareGroup fareKeysBase
         ++ "- Fees:\n"
-        ++ showFareItem "eats.mp.charges.booking_fee"
-        ++ showFareItem "eats.mp.charges.basket_dependent_fee"
-        ++ showFareItem "eats.mp.charges.mpf_cap_dependent_fee"
-        ++ "- Discounts:\n"
-        ++ showFareItem "eats.discounts.promotion"
-        ++ showFareItem "eats.item_discount.promotion_total"
-        ++ showFareItem "eats.mp.discounts.no_rush_delivery_discount"
+        ++ showFareGroup fareKeysFees
+        ++ "- Promotions:\n"
+        ++ showFareGroup fareKeysPromos
         ++ "- Subscription:\n"
-        ++ showFareItem "eats.mp.discounts.subscription_basket_dependent_discount"
-        ++ showFareItem "eats.mp.discounts.subscription_delivery_fee_discount"
+        ++ showFareGroup fareKeysSubs
         ++ "- Corrections:\n"
-        ++ showFareItem "eats.mp.eater.base.delivery_fee_correction.exclusive"
-        ++ showFareItem "eats.mp.eater.base.order_correction.exclusive"
-        ++ showFareItem "eats.mp.eater.base.order_correction.tax.exclusive"
+        ++ showFareGroup fareKeysCorrections
         ++ "- Total:\n"
-        ++ showFareItem "eats_fare.total"
-        ++ "\n"
+        ++ showFareItem fareKeyTotal
       where
+        showFareGroup :: [Text] -> String
+        showFareGroup = concatMap showFareItem
+
         showFareItem :: Text -> String
         showFareItem key = case Map.lookup key breakdown of
           Just FareItem {label, value} ->
             "  - " ++ toString label ++ ": " ++ showMoney value ++ "\n"
           Nothing -> ""
 
-alternativePrices :: Order -> Hypotheticals
-alternativePrices original = undefined
+    removeKeyGroup :: [Text] -> Fare -> Fare
+    removeKeyGroup keyGroup (Fare breakdown) =
+      Fare $ foldr Map.delete breakdown keyGroup
+
+    withSub :: Fare -> Fare
+    withSub (Fare breakdown) =
+      Fare $
+        Map.alter (const basketDiscount) fareKeySubDiscount $
+          Map.alter (const deliveryDiscount) fareKeySubDelivery breakdown
+      where
+        deliveryDiscount :: Maybe FareItem
+        deliveryDiscount = case Map.lookup fareKeyFeeDelivery breakdown of
+          Just FareItem {value} ->
+            Just $
+              FareItem
+                { label = "Delivery Discount",
+                  fareType = "debit",
+                  value = -1.0 * value
+                }
+          Nothing -> Nothing
+
+        basketDiscount :: Maybe FareItem
+        basketDiscount =
+          if subtotal > 15
+            then
+              Just $
+                FareItem
+                  { label = "Discount",
+                    fareType = "debit",
+                    value = -1.0 * subtotal * 0.05
+                  }
+            else Nothing
+          where
+            FareItem {value = subtotal} = (Map.!) breakdown fareKeyBaseSubtotal

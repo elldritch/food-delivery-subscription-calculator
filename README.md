@@ -4,6 +4,8 @@ Help you figure out whether to subscribe to Uber Eats Pass by calculating what y
 
 ## Usage
 
+<!-- TODO: export into CSV, so I can examine in a spreadsheet? -->
+
 ```
 $ fdsc --service=uber-eats --auth=foo # auth = cookie named "sid" after signing in online
 
