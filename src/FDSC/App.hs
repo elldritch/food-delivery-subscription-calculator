@@ -7,7 +7,13 @@ module FDSC.App
   )
 where
 
-import Network.HTTP.Req (HttpException, MonadHttp (..), Req, defaultHttpConfig, runReq)
+import Network.HTTP.Req
+  ( HttpException,
+    MonadHttp (..),
+    Req,
+    defaultHttpConfig,
+    runReq,
+  )
 import Relude
 
 type MonadApp m = (MonadHttp m, MonadLog m)
